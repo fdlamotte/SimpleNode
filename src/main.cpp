@@ -102,12 +102,25 @@
 
 #define PACKET_LOG_FILE  "/packet_log"
 
+#ifdef BME280_SENSOR
+  #include <Adafruit_BME280.h>
+  Adafruit_BME280 bme;
+#elif defined(DHT22_SENSOR)
+  #include <Adafruit_Sensor.h>
+  #include <DHT.h>
+  #include <DHT_U.h>
 
-#include <Adafruit_BME280.h>
+  #define DHTPIN D0     // Digital pin connected to the DHT sensor 
+  // Feather HUZZAH ESP8266 note: use pins 3, 4, 5, 12, 13 or 14 --
+  // Pin 15 can work but DHT must be disconnected during program upload.
 
-Adafruit_BME280 bme;
+  // Uncomment the type of sensor in use:
+  //#define DHTTYPE    DHT11     // DHT 11
+  #define DHTTYPE    DHT22     // DHT 22 (AM2302)
+  //#define DHTTYPE    DHT21     // DHT 21 (AM2301)
+  DHT_Unified dht(DHTPIN, DHTTYPE);
 
-
+#endif
 
 /* ------------------------------ Code -------------------------------- */
 
@@ -156,6 +169,7 @@ class MyMesh : public mesh::Mesh, public CommonCLICallbacks {
   CommonCLI _cli;
   uint8_t reply_data[MAX_PACKET_PAYLOAD];
   ClientInfo known_clients[MAX_CLIENTS];
+  int _analog;
 
   ClientInfo* putClient(const mesh::Identity& id) {
     uint32_t min_time = 0xFFFFFFFF;
@@ -534,6 +548,7 @@ public:
     _prefs.cr = LORA_CR;
     _prefs.tx_power_dbm = LORA_TX_POWER;
     _prefs.advert_interval = 1;  // default to 2 minutes for NEW installs
+    _analog = -1;
   }
 
   CommonCLI* getCLI() { return &_cli; }
@@ -611,6 +626,10 @@ public:
     _phy->setOutputPower(power_dbm);
   }
 
+  void setAnalogPin(int pin) {
+    _analog = pin;
+  }
+
   void handleCommand(uint32_t timestamp, const char * command, char* reply) {
     while (*command == ' ') command++;   // skip leading spaces
 
@@ -621,10 +640,27 @@ public:
     }
 
     if (memcmp(command, "sensors", 7) == 0) {
-      float temp = bme.readTemperature();
-      float hum = bme.readHumidity();
-      float pres = bme.readPressure();
-      sprintf(reply, "SENS T:%.2f H:%.2f P:%.2f", temp, hum, pres);
+      if (_analog != -1) {
+        float value = analogReadMilliVolts(_analog) / 1000;
+        sprintf(reply, "SENS A:%.2f", value);
+      } else {
+        float temp = 0.0;
+        float hum = 0.0;
+        float pres = 0.0;
+      #ifdef BME280_SENSOR
+        temp = bme.readTemperature();
+        hum = bme.readHumidity();
+        pres = bme.readPressure();
+        sprintf(reply, "SENS T:%.2f H:%.2f P:%.2f", temp, hum, pres);
+      #elif DHT22_SENSOR
+        sensors_event_t event;
+        dht.temperature().getEvent(&event);
+        temp = event.temperature;
+        dht.humidity().getEvent(&event);
+        hum = event.relative_humidity;
+        sprintf(reply, "SENS T:%.2f H:%.2f", temp, hum);
+      #endif
+      }
     } else { // delegate to base cli
       _cli.handleCommand(timestamp, command, reply);
     }
@@ -749,14 +785,38 @@ void setup() {
   // send out initial Advertisement to the mesh
   the_mesh.sendSelfAdvertisement(2000);
 
-
+ #ifdef BME280_SENSOR
   if (!bme.begin(0x76)) {
     Serial.println("Could not find a valid BME280 sensor !");
+    the_mesh.setAnalogPin(A0);
+  } else {
+    Serial.print("Temperature : ");
+    Serial.println(bme.readTemperature());
   }
-
-  Serial.print("Temperature : ");
-  Serial.println(bme.readTemperature());
-
+#elif defined(DHT22_SENSOR)
+  dht.begin();
+  sensor_t sensor;
+  dht.temperature().getSensor(&sensor);
+  Serial.println(F("------------------------------------"));
+  Serial.println(F("Temperature Sensor"));
+  Serial.print  (F("Sensor Type: ")); Serial.println(sensor.name);
+  Serial.print  (F("Driver Ver:  ")); Serial.println(sensor.version);
+  Serial.print  (F("Unique ID:   ")); Serial.println(sensor.sensor_id);
+  Serial.print  (F("Max Value:   ")); Serial.print(sensor.max_value); Serial.println(F("°C"));
+  Serial.print  (F("Min Value:   ")); Serial.print(sensor.min_value); Serial.println(F("°C"));
+  Serial.print  (F("Resolution:  ")); Serial.print(sensor.resolution); Serial.println(F("°C"));
+  Serial.println(F("------------------------------------"));
+  // Print humidity sensor details.
+  dht.humidity().getSensor(&sensor);
+  Serial.println(F("Humidity Sensor"));
+  Serial.print  (F("Sensor Type: ")); Serial.println(sensor.name);
+  Serial.print  (F("Driver Ver:  ")); Serial.println(sensor.version);
+  Serial.print  (F("Unique ID:   ")); Serial.println(sensor.sensor_id);
+  Serial.print  (F("Max Value:   ")); Serial.print(sensor.max_value); Serial.println(F("%"));
+  Serial.print  (F("Min Value:   ")); Serial.print(sensor.min_value); Serial.println(F("%"));
+  Serial.print  (F("Resolution:  ")); Serial.print(sensor.resolution); Serial.println(F("%"));
+  Serial.println(F("------------------------------------"));
+#endif
   nextSleep = millis() + 30000; // first sleep after 30s
   pinMode(LED_BUILTIN, OUTPUT);
   digitalWrite(LED_BUILTIN, LOW); // led on when awake
@@ -804,5 +864,4 @@ void loop() {
       nextSleep = millis() + 1000;
     }
   }
-
 }
