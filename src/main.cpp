@@ -102,6 +102,13 @@
 
 #define PACKET_LOG_FILE  "/packet_log"
 
+
+#include <Adafruit_BME280.h>
+
+Adafruit_BME280 bme;
+
+
+
 /* ------------------------------ Code -------------------------------- */
 
 #define CMD_GET_STATUS      0x01
@@ -459,7 +466,7 @@ protected:
         if (is_retry) {
           temp[0] = 0;
         } else {
-          _cli.handleCommand(sender_timestamp, (const char *) &data[5], (char *) &temp[5]);
+          handleCommand(sender_timestamp, (const char *) &data[5], (char *) &temp[5]);
         }
         int text_len = strlen((char *) &temp[5]);
         if (text_len > 0) {
@@ -604,6 +611,25 @@ public:
     _phy->setOutputPower(power_dbm);
   }
 
+  void handleCommand(uint32_t timestamp, const char * command, char* reply) {
+    while (*command == ' ') command++;   // skip leading spaces
+
+    if (strlen(command) > 4 && command[2] == '|') {  // optional prefix (for companion radio CLI)
+      memcpy(reply, command, 3);  // reflect the prefix back
+      reply += 3;
+      command += 3;
+    }
+
+    if (memcmp(command, "sensors", 7) == 0) {
+      float temp = bme.readTemperature();
+      float hum = bme.readHumidity();
+      float pres = bme.readPressure();
+      sprintf(reply, "SENS T:%.2f H:%.2f P:%.2f", temp, hum, pres);
+    } else { // delegate to base cli
+      _cli.handleCommand(timestamp, command, reply);
+    }
+  }
+
   void loop() {
     mesh::Mesh::loop();
 
@@ -723,8 +749,17 @@ void setup() {
   // send out initial Advertisement to the mesh
   the_mesh.sendSelfAdvertisement(2000);
 
+
+  if (!bme.begin(0x76)) {
+    Serial.println("Could not find a valid BME280 sensor !");
+  }
+
+  Serial.print("Temperature : ");
+  Serial.println(bme.readTemperature());
+
   nextSleep = millis() + 30000; // first sleep after 30s
   pinMode(LED_BUILTIN, OUTPUT);
+  digitalWrite(LED_BUILTIN, LOW); // led on when awake
 }
 
 void loop() {
@@ -744,7 +779,7 @@ void loop() {
   if (len > 0 && command[len - 1] == '\r') {  // received complete line
     command[len - 1] = 0;  // replace newline with C string null terminator
     char reply[160];
-    the_mesh.getCLI()->handleCommand(0, command, reply);  // NOTE: there is no sender_timestamp via serial!
+    the_mesh.handleCommand(0, command, reply);  // NOTE: there is no sender_timestamp via serial!
     if (reply[0]) {
       Serial.print("  -> "); Serial.println(reply);
     }
@@ -755,29 +790,19 @@ void loop() {
   the_mesh.loop();
 
   if (millis() > nextSleep) {
-    static int count;
-    static int ledState = LOW;
-
-    digitalWrite(LED_BUILTIN, ledState);
-    ledState = !ledState;
-
-    esp_sleep_enable_timer_wakeup(60 * 1000000);
-//    esp_sleep_enable_ext1_wakeup( (((uint64_t)1L) << P_LORA_DIO_1), ESP_EXT1_WAKEUP_ANY_HIGH);
-    int ret = esp_sleep_enable_ext0_wakeup( GPIO_NUM_2, ESP_EXT1_WAKEUP_ANY_HIGH);
-    Serial.println(ret);
-    delay(100); 
-    //gpio_wakeup_enable(GPIO_NUM_39, GPIO_INTR_HIGH_LEVEL);
-    //esp_sleep_enable_gpio_wakeup();
-
-    //detachInterrupt(P_LORA_DIO_1);
-    esp_light_sleep_start();
-
-    the_mesh.loop();
-
-    digitalWrite(LED_BUILTIN, ledState);
-    ledState = !ledState;
-
-    nextSleep = millis() + 5000;
+    if (digitalRead(P_LORA_BUSY) == LOW) {
+      esp_sleep_enable_timer_wakeup(600 * 1000000);
+      esp_sleep_enable_ext1_wakeup( (((uint64_t)1L) << D1), ESP_EXT1_WAKEUP_ANY_HIGH);
+      digitalWrite(LED_BUILTIN, HIGH);
+      esp_light_sleep_start();
+      // process the loop directly after wakeup
+      the_mesh.loop();
+      digitalWrite(LED_BUILTIN, LOW);
+      nextSleep = millis() + 5000; // 5sec wakeup
+    } else {
+      // retry in a sec
+      nextSleep = millis() + 1000;
+    }
   }
 
 }
