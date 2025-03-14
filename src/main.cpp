@@ -831,6 +831,8 @@ void loop() {
       command[len] = 0;
     }
     Serial.print(c);
+    int ns = millis() + 10000;
+    nextSleep = ns > nextSleep ? ns : nextSleep; // postpone sleep by 10sec
   }
   if (len == sizeof(command)-1) {  // command buffer full
     command[sizeof(command)-1] = '\r';
